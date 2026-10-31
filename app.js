@@ -1,4 +1,3 @@
-require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const multer = require('multer');
@@ -11,7 +10,7 @@ const fetch = require('node-fetch'); // hapus jika Node >= 18
 // ============================================
 // KONFIGURASI IMGBB
 // ============================================
-const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
+const IMGBB_API_KEY = "65e2f9dbadd1a44d74bcf9778f8e46e3";
 const IMGBB_UPLOAD_URL = 'https://api.imgbb.com/1/upload';
 const IMGBB_EXPIRATION = 3600; // 1 jam (3600 detik)
 

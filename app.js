@@ -1,75 +1,122 @@
+require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const multer = require('multer');
 const fs = require('fs');
 const Jimp = require('jimp');
 const { createCanvas, registerFont, loadImage } = require('canvas');
+const FormData = require('form-data');
+const fetch = require('node-fetch'); // hapus jika Node >= 18
 
-// Register semua font dengan path absolut
+// ============================================
+// KONFIGURASI IMGBB
+// ============================================
+const IMGBB_API_KEY = '65e2f9dbadd1a44d74bcf9778f8e46e3';
+const IMGBB_UPLOAD_URL = 'https://api.imgbb.com/1/upload';
+
+if (!IMGBB_API_KEY) {
+  console.warn('⚠️  IMGBB_API_KEY belum diset di .env');
+}
+
+// ============================================
+// FUNGSI UPLOAD KE IMGBB (TANPA EXPIRATION)
+// ============================================
+
+/**
+ * Upload buffer ke ImgBB (permanen, tanpa expiration)
+ * @param {Buffer} buffer
+ * @param {string} [name]
+ * @returns {Promise<{url, displayUrl, thumb, deleteUrl, id, size}>}
+ */
+async function uploadBufferToImgBB(buffer, name = null) {
+  if (!IMGBB_API_KEY) throw new Error('IMGBB_API_KEY belum diset di .env');
+
+  const base64Image = buffer.toString('base64');
+
+  const form = new FormData();
+  form.append('key', IMGBB_API_KEY);
+  form.append('image', base64Image);
+  if (name) form.append('name', name);
+
+  const response = await fetch(IMGBB_UPLOAD_URL, {
+    method: 'POST',
+    body: form,
+    headers: form.getHeaders()
+  });
+
+  const json = await response.json();
+  if (!json.success) {
+    throw new Error(json.error?.message || 'Upload ImgBB gagal');
+  }
+
+  const d = json.data;
+  return {
+    url: d.url,
+    displayUrl: d.display_url,
+    thumb: d.thumb?.url || null,
+    deleteUrl: d.delete_url,
+    id: d.id,
+    size: d.size
+  };
+}
+
+/**
+ * Upload file dari disk ke ImgBB (permanen)
+ * @param {string} filePath
+ * @param {string} [name]
+ */
+async function uploadToImgBB(filePath, name = null) {
+  const buffer = fs.readFileSync(filePath);
+  return uploadBufferToImgBB(buffer, name);
+}
+
+// ============================================
+// REGISTER FONT
+// ============================================
 try {
-  // Font OCR untuk NIK
   const ocrFontPath = path.resolve(__dirname, 'font/Ocr.ttf');
-  // Font Sign untuk tanda tangan
   const signFontPath = path.resolve(__dirname, 'font/Sign.ttf');
-  // Font Arrial untuk teks lainnya
   const arrialFontPath = path.resolve(__dirname, 'font/Arrial.ttf');
-  
-  console.log('Font paths:');
-  console.log('OCR:', ocrFontPath);
-  console.log('Sign:', signFontPath);
-  console.log('Arrial:', arrialFontPath);
-  
-  // Daftarkan font
-  if (fs.existsSync(ocrFontPath)) {
-    registerFont(ocrFontPath, { family: 'OCR' });
-    console.log('Font OCR berhasil didaftarkan');
-  }
-  
-  if (fs.existsSync(signFontPath)) {
-    registerFont(signFontPath, { family: 'Sign' });
-    console.log('Font Sign berhasil didaftarkan');
-  }
-  
-  if (fs.existsSync(arrialFontPath)) {
-    registerFont(arrialFontPath, { family: 'Arrial' });
-    console.log('Font Arrial berhasil didaftarkan');
-  }
+
+  if (fs.existsSync(ocrFontPath)) registerFont(ocrFontPath, { family: 'OCR' });
+  if (fs.existsSync(signFontPath)) registerFont(signFontPath, { family: 'Sign' });
+  if (fs.existsSync(arrialFontPath)) registerFont(arrialFontPath, { family: 'Arrial' });
 } catch (error) {
   console.error('Error saat mendaftarkan font:', error);
 }
 
-// Inisialisasi Express
+// ============================================
+// EXPRESS SETUP
+// ============================================
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Set view engine
 app.set('view engine', 'ejs');
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-// Konfigurasi penyimpanan upload
+const uploadsDir = path.join(__dirname, 'public/uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'public/uploads/');
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) =>
+    cb(null, Date.now() + '_' + Math.random().toString(36).slice(2, 8) + path.extname(file.originalname))
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('File harus berupa gambar'), false);
   }
 });
 
-const upload = multer({ 
-  storage: storage,
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('File harus berupa gambar'), false);
-    }
-  } 
-});
-
-// Routes
+// ============================================
+// ROUTES
+// ============================================
 app.get('/', (req, res) => {
   res.render('index');
 });
@@ -78,115 +125,162 @@ app.post('/generate', upload.fields([
   { name: 'pas_photo', maxCount: 1 },
   { name: 'tanda_tangan', maxCount: 1 }
 ]), async (req, res) => {
+  const localFilesToCleanup = [];
+
   try {
     if (!req.files || !req.files['pas_photo']) {
-      return res.status(400).render('error', { 
-        message: 'Pas foto wajib diupload' 
-      });
+      return res.status(400).render('error', { message: 'Pas foto wajib diupload' });
     }
 
     const data = req.body;
-    data.pas_photo = req.files['pas_photo'][0].path;
-    
-    // Jika tanda tangan diberikan sebagai data URL
-    if (data.tanda_tangan && data.tanda_tangan.startsWith('data:image/png;base64,')) {
-      // Simpan tanda tangan sebagai file
-      const signatureData = data.tanda_tangan.replace(/^data:image\/png;base64,/, '');
-      const signaturePath = path.join(__dirname, 'public/uploads', `signature_${Date.now()}.png`);
-      fs.writeFileSync(signaturePath, Buffer.from(signatureData, 'base64'));
-      data.tanda_tangan_path = signaturePath;
+    const pasPhotoFile = req.files['pas_photo'][0];
+    data.pas_photo = pasPhotoFile.path;
+    localFilesToCleanup.push(pasPhotoFile.path);
+
+    // === Upload pas foto ke ImgBB ===
+    const pasPhotoUpload = await uploadToImgBB(
+      pasPhotoFile.path,
+      `pas_photo_${Date.now()}`
+    );
+    data.pas_photo_url = pasPhotoUpload.url;
+    data.pas_photo_delete_url = pasPhotoUpload.deleteUrl;
+
+    // === Handle tanda tangan ===
+    if (req.files && req.files['tanda_tangan']) {
+      const signFile = req.files['tanda_tangan'][0];
+      data.tanda_tangan_path = signFile.path;
+      localFilesToCleanup.push(signFile.path);
+
+      const signUpload = await uploadToImgBB(
+        signFile.path,
+        `tanda_tangan_${Date.now()}`
+      );
+      data.tanda_tangan_url = signUpload.url;
+      data.tanda_tangan_delete_url = signUpload.deleteUrl;
+    } else if (data.tanda_tangan && data.tanda_tangan.startsWith('data:image/png;base64,')) {
+      // Base64 dari canvas (jika ada)
+      const base64Data = data.tanda_tangan.replace(/^data:image\/png;base64,/, '');
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      const signUpload = await uploadBufferToImgBB(
+        buffer,
+        `tanda_tangan_${Date.now()}`
+      );
+      data.tanda_tangan_url = signUpload.url;
+      data.tanda_tangan_delete_url = signUpload.deleteUrl;
+
+      // Simpan lokal sementara untuk generateEKTP
+      const localSignPath = path.join(uploadsDir, `signature_${Date.now()}.png`);
+      fs.writeFileSync(localSignPath, buffer);
+      data.tanda_tangan_path = localSignPath;
+      localFilesToCleanup.push(localSignPath);
     }
 
-    // Buat KTP
+    // === Generate E-KTP ===
     const resultPath = await generateEKTP(data);
-    
-    res.render('result', { 
-      imgPath: '/images/result.png',
+    localFilesToCleanup.push(resultPath);
+
+    // === Upload hasil E-KTP ke ImgBB ===
+    const resultUpload = await uploadToImgBB(resultPath, `ektp_${Date.now()}`);
+    data.result_url = resultUpload.url;
+    data.result_delete_url = resultUpload.deleteUrl;
+    data.result_thumb = resultUpload.thumb;
+
+    // === Render halaman hasil ===
+    res.render('result', {
+      imgPath: resultUpload.url,
+      thumb: resultUpload.thumb,
+      deleteUrl: resultUpload.deleteUrl,
       data: data
     });
-    
+
   } catch (error) {
     console.error('Error:', error);
-    res.status(500).render('error', { 
-      message: 'Terjadi kesalahan saat membuat E-KTP: ' + error.message 
+    res.status(500).render('error', {
+      message: 'Terjadi kesalahan saat membuat E-KTP: ' + error.message
     });
+  } finally {
+    // Cleanup file lokal
+    for (const f of localFilesToCleanup) {
+      try {
+        if (fs.existsSync(f)) fs.unlinkSync(f);
+      } catch (e) {
+        console.warn('Gagal hapus file lokal:', f, e.message);
+      }
+    }
   }
 });
 
-// Fungsi untuk membuat E-KTP
+// Endpoint opsional: upload manual ke ImgBB
+app.post('/api/upload', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'File wajib diupload' });
+    }
+
+    const result = await uploadToImgBB(req.file.path, `upload_${Date.now()}`);
+
+    if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// FUNGSI GENERATE E-KTP (sama seperti asli)
+// ============================================
 async function generateEKTP(data) {
   try {
-    // Baca template dengan Jimp terlebih dahulu
     const template = await Jimp.read(path.join(__dirname, 'public/images/Template.png'));
-    
-    // Baca foto pas
-    const photoPath = path.join(__dirname, data.pas_photo);
-    let pasPhoto = await Jimp.read(photoPath);
-    
-    // Resize dan crop foto jika perlu
+
+    let pasPhoto = await Jimp.read(path.join(__dirname, data.pas_photo));
     if (pasPhoto.getWidth() !== 432) {
       pasPhoto = pasPhoto.crop(0, 0, Math.min(pasPhoto.getWidth(), 432), Math.min(pasPhoto.getHeight(), 450));
     }
-    
-    pasPhoto = pasPhoto.resize(Math.round(pasPhoto.getWidth() * 0.4), Math.round(pasPhoto.getHeight() * 0.4));
-    
-    // Tempel foto ke template
+    pasPhoto = pasPhoto.resize(
+      Math.round(pasPhoto.getWidth() * 0.4),
+      Math.round(pasPhoto.getHeight() * 0.4)
+    );
+
     template.composite(pasPhoto, 520, 140);
 
-    // Simpan template dengan foto untuk diproses lebih lanjut dengan canvas
     const templateWithPhotoPath = path.join(__dirname, 'public/images/temp_template.png');
     await template.writeAsync(templateWithPhotoPath);
 
-    // Load template dengan foto ke canvas
     const templateImg = await loadImage(templateWithPhotoPath);
-    const canvasWidth = templateImg.width;
-    const canvasHeight = templateImg.height;
-    
-    // Buat canvas dengan ukuran yang sama dengan template
-    const canvas = createCanvas(canvasWidth, canvasHeight);
+    const canvas = createCanvas(templateImg.width, templateImg.height);
     const ctx = canvas.getContext('2d');
-    
-    // Gambar template ke canvas
-    ctx.drawImage(templateImg, 0, 0, canvasWidth, canvasHeight);
-    
-    // Konfigurasi font
+    ctx.drawImage(templateImg, 0, 0, templateImg.width, templateImg.height);
+
     ctx.fillStyle = 'black';
-    
-    // Font provinsi dan kota (Arrial) - posisi tengah
+
+    // Provinsi & Kota
     try {
-      // Provinsi (di tengah)
       ctx.font = '25px Arrial';
       ctx.textAlign = 'center';
-      // Posisi tengah horizontal di 380, vertikal di 65 (ditambah 10px dari sebelumnya)
       ctx.fillText(`PROVINSI ${data.provinsi.toUpperCase()}`, 380, 65);
-      // Kota (di tengah)
       ctx.fillText(`KOTA ${data.kota.toUpperCase()}`, 380, 90);
-      
-      // Reset text align kembali ke default untuk teks lainnya
       ctx.textAlign = 'left';
     } catch (e) {
-      console.error('Error menggunakan font Arrial:', e);
-      // Fallback ke font standard
       ctx.font = '25px sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText(`PROVINSI ${data.provinsi.toUpperCase()}`, 380, 65);
       ctx.fillText(`KOTA ${data.kota.toUpperCase()}`, 380, 90);
       ctx.textAlign = 'left';
     }
-    
-    // Font NIK menggunakan OCR - posisinya diturunkan 20px dari posisi awal (sekarang 125)
+
+    // NIK
     try {
       ctx.font = '32px OCR';
-      ctx.fillText(data.nik, 170, 125); // posisi y diturunkan dari 105 menjadi 125 (+20px)
-      console.log('Menggunakan font OCR untuk NIK');
+      ctx.fillText(data.nik, 170, 125);
     } catch (e) {
-      console.error('Error menggunakan font OCR:', e);
-      // Fallback ke font monospace
       ctx.font = '32px monospace';
       ctx.fillText(data.nik, 170, 125);
     }
-    
-    // Font data menggunakan Arrial - posisi y tetap seperti sebelumnya
+
+    // Data
     try {
       ctx.font = '16px Arrial';
       ctx.fillText(data.nama.toUpperCase(), 190, 155);
@@ -205,58 +299,39 @@ async function generateEKTP(data) {
       ctx.fillText(`KOTA ${data.kota.toUpperCase()}`, 553, 350);
       ctx.fillText(data.terbuat || new Date().toLocaleDateString('id-ID'), 570, 370);
     } catch (e) {
-      console.error('Error menggunakan font Arrial untuk data:', e);
-      // Fallback ke font standard
       ctx.font = '16px sans-serif';
-      // Ulangi penulisan teks dengan font fallback dan posisi yang sama
       ctx.fillText(data.nama.toUpperCase(), 190, 155);
       ctx.fillText(data.ttl.toUpperCase(), 190, 178);
-      // ... dan seterusnya dengan posisi yang sama seperti di atas
     }
-    
-    // Tanda tangan (nama pertama atau tanda tangan yang di-upload)
+
+    // Tanda tangan
     try {
       if (data.tanda_tangan_path) {
-        // Jika ada tanda tangan yang di-upload
         const signatureImg = await loadImage(data.tanda_tangan_path);
-        // Resize tanda tangan ke ukuran yang sesuai
-        const signWidth = 120;
-        const signHeight = 50;
-        ctx.drawImage(signatureImg, 540, 385, signWidth, signHeight);
+        ctx.drawImage(signatureImg, 540, 385, 120, 50);
       } else {
-        // Jika tidak, gunakan nama pertama dengan font Sign
         const nameParts = data.nama.split(' ');
         ctx.font = '40px Sign';
         ctx.fillText(nameParts[0], 540, 405);
-        console.log('Menggunakan font Sign untuk tanda tangan');
       }
     } catch (e) {
-      console.error('Error menggunakan font Sign untuk tanda tangan:', e);
-      // Fallback ke font standard
       const nameParts = data.nama.split(' ');
       ctx.font = '40px serif';
       ctx.fillText(nameParts[0], 540, 405);
     }
-    
-    // Simpan hasil
+
     const outputPath = path.join(__dirname, 'public/images/result.png');
     const out = fs.createWriteStream(outputPath);
     const stream = canvas.createPNGStream();
-    
+
     await new Promise((resolve, reject) => {
       stream.pipe(out);
       out.on('finish', resolve);
       out.on('error', reject);
     });
-    
-    // Hapus file temporary
-    fs.unlinkSync(templateWithPhotoPath);
-    
-    // Hapus file tanda tangan jika ada
-    if (data.tanda_tangan_path && fs.existsSync(data.tanda_tangan_path)) {
-      fs.unlinkSync(data.tanda_tangan_path);
-    }
-    
+
+    if (fs.existsSync(templateWithPhotoPath)) fs.unlinkSync(templateWithPhotoPath);
+
     return outputPath;
   } catch (error) {
     console.error('Error generating E-KTP:', error);
@@ -264,7 +339,10 @@ async function generateEKTP(data) {
   }
 }
 
-// Start server
+// ============================================
+// START SERVER
+// ============================================
 app.listen(port, () => {
   console.log(`Server berjalan di http://localhost:${port}`);
-}); 
+  console.log(`ImgBB API Key: ${IMGBB_API_KEY ? '✓ terdeteksi' : '✗ TIDAK ADA'}`);
+});

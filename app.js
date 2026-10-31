@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const multer = require('multer');
@@ -10,34 +11,37 @@ const fetch = require('node-fetch'); // hapus jika Node >= 18
 // ============================================
 // KONFIGURASI IMGBB
 // ============================================
-const IMGBB_API_KEY = '65e2f9dbadd1a44d74bcf9778f8e46e3';
+const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
 const IMGBB_UPLOAD_URL = 'https://api.imgbb.com/1/upload';
+const IMGBB_EXPIRATION = 3600; // 1 jam (3600 detik)
 
 if (!IMGBB_API_KEY) {
   console.warn('⚠️  IMGBB_API_KEY belum diset di .env');
 }
 
 // ============================================
-// FUNGSI UPLOAD KE IMGBB (TANPA EXPIRATION)
+// FUNGSI UPLOAD KE IMGBB (EXPIRATION 1 JAM)
 // ============================================
 
 /**
- * Upload buffer ke ImgBB (permanen, tanpa expiration)
+ * Upload buffer ke ImgBB dengan expiration 1 jam
  * @param {Buffer} buffer
  * @param {string} [name]
- * @returns {Promise<{url, displayUrl, thumb, deleteUrl, id, size}>}
+ * @returns {Promise<{url, displayUrl, thumb, deleteUrl, id, size, expiration}>}
  */
 async function uploadBufferToImgBB(buffer, name = null) {
   if (!IMGBB_API_KEY) throw new Error('IMGBB_API_KEY belum diset di .env');
 
   const base64Image = buffer.toString('base64');
 
+  // Endpoint dengan expiration sebagai QUERY STRING (sesuai docs ImgBB)
+  const uploadUrl = `${IMGBB_UPLOAD_URL}?expiration=${IMGBB_EXPIRATION}&key=${IMGBB_API_KEY}`;
+
   const form = new FormData();
-  form.append('key', IMGBB_API_KEY);
   form.append('image', base64Image);
   if (name) form.append('name', name);
 
-  const response = await fetch(IMGBB_UPLOAD_URL, {
+  const response = await fetch(uploadUrl, {
     method: 'POST',
     body: form,
     headers: form.getHeaders()
@@ -55,12 +59,13 @@ async function uploadBufferToImgBB(buffer, name = null) {
     thumb: d.thumb?.url || null,
     deleteUrl: d.delete_url,
     id: d.id,
-    size: d.size
+    size: d.size,
+    expiration: d.expiration || IMGBB_EXPIRATION
   };
 }
 
 /**
- * Upload file dari disk ke ImgBB (permanen)
+ * Upload file dari disk ke ImgBB dengan expiration 1 jam
  * @param {string} filePath
  * @param {string} [name]
  */
@@ -136,7 +141,7 @@ app.post('/generate', upload.fields([
     data.pas_photo = pasPhotoFile.path;
     localFilesToCleanup.push(pasPhotoFile.path);
 
-    // === Upload pas foto ke ImgBB ===
+    // === Upload pas foto ke ImgBB (expired 1 jam) ===
     const pasPhotoUpload = await uploadToImgBB(
       pasPhotoFile.path,
       `pas_photo_${Date.now()}`
@@ -157,7 +162,7 @@ app.post('/generate', upload.fields([
       data.tanda_tangan_url = signUpload.url;
       data.tanda_tangan_delete_url = signUpload.deleteUrl;
     } else if (data.tanda_tangan && data.tanda_tangan.startsWith('data:image/png;base64,')) {
-      // Base64 dari canvas (jika ada)
+      // Base64 dari canvas
       const base64Data = data.tanda_tangan.replace(/^data:image\/png;base64,/, '');
       const buffer = Buffer.from(base64Data, 'base64');
 
@@ -168,7 +173,6 @@ app.post('/generate', upload.fields([
       data.tanda_tangan_url = signUpload.url;
       data.tanda_tangan_delete_url = signUpload.deleteUrl;
 
-      // Simpan lokal sementara untuk generateEKTP
       const localSignPath = path.join(uploadsDir, `signature_${Date.now()}.png`);
       fs.writeFileSync(localSignPath, buffer);
       data.tanda_tangan_path = localSignPath;
@@ -179,7 +183,7 @@ app.post('/generate', upload.fields([
     const resultPath = await generateEKTP(data);
     localFilesToCleanup.push(resultPath);
 
-    // === Upload hasil E-KTP ke ImgBB ===
+    // === Upload hasil E-KTP ke ImgBB (expired 1 jam) ===
     const resultUpload = await uploadToImgBB(resultPath, `ektp_${Date.now()}`);
     data.result_url = resultUpload.url;
     data.result_delete_url = resultUpload.deleteUrl;
@@ -190,6 +194,7 @@ app.post('/generate', upload.fields([
       imgPath: resultUpload.url,
       thumb: resultUpload.thumb,
       deleteUrl: resultUpload.deleteUrl,
+      expiration: resultUpload.expiration, // 3600 detik
       data: data
     });
 
@@ -199,7 +204,6 @@ app.post('/generate', upload.fields([
       message: 'Terjadi kesalahan saat membuat E-KTP: ' + error.message
     });
   } finally {
-    // Cleanup file lokal
     for (const f of localFilesToCleanup) {
       try {
         if (fs.existsSync(f)) fs.unlinkSync(f);
@@ -218,7 +222,6 @@ app.post('/api/upload', upload.single('image'), async (req, res) => {
     }
 
     const result = await uploadToImgBB(req.file.path, `upload_${Date.now()}`);
-
     if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
 
     res.json({ success: true, data: result });
@@ -228,7 +231,7 @@ app.post('/api/upload', upload.single('image'), async (req, res) => {
 });
 
 // ============================================
-// FUNGSI GENERATE E-KTP (sama seperti asli)
+// FUNGSI GENERATE E-KTP (tidak berubah)
 // ============================================
 async function generateEKTP(data) {
   try {
@@ -344,4 +347,5 @@ async function generateEKTP(data) {
 app.listen(port, () => {
   console.log(`Server berjalan di http://localhost:${port}`);
   console.log(`ImgBB API Key: ${IMGBB_API_KEY ? '✓ terdeteksi' : '✗ TIDAK ADA'}`);
+  console.log(`ImgBB Expiration: ${IMGBB_EXPIRATION} detik (1 jam)`);
 });

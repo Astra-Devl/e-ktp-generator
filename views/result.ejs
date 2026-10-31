@@ -47,14 +47,41 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="mb-4 d-flex flex-column flex-md-row justify-content-center gap-2">
+
+                        <!-- Info URL ImgBB -->
+                        <% if (typeof imgPath !== 'undefined' && imgPath) { %>
+                        <div class="mb-4">
+                            <div class="input-group">
+                                <span class="input-group-text"><i class="bi bi-link-45deg"></i></span>
+                                <input type="text" class="form-control" id="imgbbUrl" value="<%= imgPath %>" readonly>
+                                <button class="btn btn-outline-secondary" type="button" onclick="copyUrl()">
+                                    <i class="bi bi-clipboard"></i> Copy
+                                </button>
+                            </div>
+                            <small class="text-muted d-block mt-2">
+                                <i class="bi bi-cloud-check me-1"></i>Gambar tersimpan permanen di ImgBB
+                            </small>
+                        </div>
+                        <% } %>
+
+                        <div class="mb-4 d-flex flex-column flex-md-row justify-content-center gap-2 flex-wrap">
                             <a href="<%= imgPath %>" download="ektp_<%= data.nama.replace(/\s+/g, '_').toLowerCase() %>.png" class="btn btn-primary">
                                 <i class="bi bi-download me-2"></i>Download E-KTP
                             </a>
+                            <a href="<%= imgPath %>" target="_blank" class="btn btn-info text-white">
+                                <i class="bi bi-box-arrow-up-right me-2"></i>Buka di ImgBB
+                            </a>
+                            <% if (typeof deleteUrl !== 'undefined' && deleteUrl) { %>
+                            <a href="<%= deleteUrl %>" target="_blank" class="btn btn-danger"
+                               onclick="return confirm('Yakin ingin menghapus gambar dari ImgBB? Tindakan ini tidak bisa dibatalkan.')">
+                                <i class="bi bi-trash me-2"></i>Hapus dari ImgBB
+                            </a>
+                            <% } %>
                             <a href="/" class="btn btn-secondary">
                                 <i class="bi bi-plus-circle me-2"></i>Buat E-KTP Baru
                             </a>
                         </div>
+
                         <div class="alert alert-warning">
                             <i class="bi bi-exclamation-triangle-fill me-2"></i>
                             <strong>Catatan:</strong> E-KTP ini dibuat hanya untuk tujuan edukasi dan tidak memiliki nilai hukum. Dilarang menggunakan untuk tindakan penipuan atau melanggar hukum.
@@ -64,13 +91,40 @@
             </div>
         </div>
     </div>
-    
+
     <footer class="text-center py-3 mt-5">
         <div class="container">
             <p class="mb-0">Created by <a href="https://whatsapp.com/channel/0029VaoIOkS8aKvAjUsjNk1f" target="_blank">Mas Khan ID</a></p>
         </div>
     </footer>
-    
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    <!-- Script Copy URL -->
+    <script>
+        function copyUrl() {
+            const input = document.getElementById('imgbbUrl');
+            if (!input) return;
+            input.select();
+            input.setSelectionRange(0, 99999);
+            navigator.clipboard.writeText(input.value)
+                .then(() => {
+                    const btn = event.target.closest('button');
+                    const original = btn.innerHTML;
+                    btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
+                    btn.classList.remove('btn-outline-secondary');
+                    btn.classList.add('btn-success');
+                    setTimeout(() => {
+                        btn.innerHTML = original;
+                        btn.classList.remove('btn-success');
+                        btn.classList.add('btn-outline-secondary');
+                    }, 2000);
+                })
+                .catch(err => {
+                    console.error('Gagal copy:', err);
+                    alert('Gagal copy. Silakan copy manual.');
+                });
+        }
+    </script>
 </body>
-</html> 
+</html>
